@@ -427,7 +427,9 @@ class CIRPState(object):
         # common dynamic state
         #----------------------
         self.loc_visited = torch.full((self.batch_size, self.num_locs), False, dtype=torch.bool, device=device)
-        self.vehicle_known_visited_locs = torch.full((self.batch_size, self.num_vehicles, self.num_locs), False, dtype=torch.bool, device=device)
+        # 之后改
+        self.vehicle_known_visited_locs = torch.full((self.batch_size, self.num_vehicles, self.num_locs), False, dtype=torch.bool, device=device) # 或者全局版本，取决于你最终的选择
+        self.persistent_visited_mask = torch.full((self.batch_size, self.num_locs), False, dtype=torch.bool, device=device)
         self.next_vehicle_id = torch.zeros(self.batch_size, dtype=torch.long, device=device) # firstly allocate 0-th vehicles
         self.skip = torch.full((self.batch_size,), False, dtype=bool, device=device) # [batch_size]
         self.end  = torch.full((self.batch_size,), False, dtype=bool, device=device) # [batch_size]
@@ -1411,7 +1413,30 @@ class CIRPState(object):
                 }
             # 之后改--- 修改：车辆到达充电站入队逻辑 ---
             next_vehicle_on_move = next_vehicles_on_update_batch & (self.vehicle_phase == self.phase_id["move"])
-            
+
+            # --- 修改代码: 更新全局永久访问掩码 ---
+            if next_vehicle_on_move.any(): # 只有当确实有车辆完成移动时才执行
+                # 找出哪些批次完成了移动
+                batch_indices = torch.where(next_vehicle_on_move.any(dim=1))[0] # 找到至少有一辆车完成移动的批次索引
+
+                # 获取这些批次中完成移动的车辆对应的目标节点 ID
+                # next_node_id 的形状是 [batch_size]，它对应 next_vehicle_id
+                # 我们只关心那些完成移动的批次的目标节点
+                destination_nodes = next_node_id[batch_indices]
+
+                # 创建一个掩码，只选择那些目标是客户点（loc）的情况
+                is_loc_destination = destination_nodes < self.num_locs
+
+                # 筛选出有效的批次索引和对应的客户点（loc）索引
+                valid_batch_indices = batch_indices[is_loc_destination]
+                valid_loc_indices = destination_nodes[is_loc_destination]
+
+                # 更新全局 persistent_visited_mask 中对应的条目为 True
+                if valid_loc_indices.numel() > 0: # 确保有有效的客户点索引
+                    # 使用高级索引直接更新
+                    self.persistent_visited_mask[valid_batch_indices, valid_loc_indices] = True
+            # --- 修改代码结束 ---
+
             if next_vehicle_on_move.sum() > 0:
                 # 添加准备时间
                 self.vehicle_unavail_time += self.vehicle_pre_time * next_vehicle_on_move
@@ -1671,6 +1696,8 @@ class CIRPState(object):
         # 在断言前添加这段代
         current_step_log["intermediate_results"]["vehicle_known_visited_locs"] = \
                  self.vehicle_known_visited_locs[batch].clone().detach().cpu()
+        current_step_log["intermediate_results"]["persistent_visited_mask"] = \
+                 self.persistent_visited_mask[batch].clone().detach().cpu()
 
         
         #创建全1矩阵，初始状态所有节点都可访问
@@ -1702,59 +1729,59 @@ class CIRPState(object):
         if self.fname is not None and hasattr(self, 'mask_calc_log'):
             current_step_log["rule_masks"]["after_unreturnable"] = mask[batch].clone().detach().cpu()
 
-        # 规则3: 屏蔽已被其他车辆访问的节点
-        vehicle_primal_pos_loc = torch.full((self.batch_size, self.num_nodes), False, device=self.device)
-        vehicle_primal_pos_loc.scatter_(1, self.vehicle_position_id, True)
-        # Only add to mask_calc_log if it exists
-        if self.fname is not None and hasattr(self, 'mask_calc_log'):
-            current_step_log["intermediate_results"]["vehicle_primal_pos_nodes"] = vehicle_primal_pos_loc[batch].clone().detach().cpu()
+#         # 规则3: 屏蔽已被其他车辆访问的节点
+#         vehicle_primal_pos_loc = torch.full((self.batch_size, self.num_nodes), False, device=self.device)
+#         vehicle_primal_pos_loc.scatter_(1, self.vehicle_position_id, True)
+#         # Only add to mask_calc_log if it exists
+#         if self.fname is not None and hasattr(self, 'mask_calc_log'):
+#             current_step_log["intermediate_results"]["vehicle_primal_pos_nodes"] = vehicle_primal_pos_loc[batch].clone().detach().cpu()
 
-        # # 保存规则3应用前的掩码状态
-        # if self.fname is not None and hasattr(self, 'mask_calc_log'):
-            current_step_log["rule_masks"]["before_visited_locs"] = mask[batch].clone().detach().cpu()
+#         # # 保存规则3应用前的掩码状态
+#         # if self.fname is not None and hasattr(self, 'mask_calc_log'):
+#             current_step_log["rule_masks"]["before_visited_locs"] = mask[batch].clone().detach().cpu()
         
-        # 关注loc部分为False
-        vehicle_primal_pos_loc[:, self.num_locs:] = False
+#         # 关注loc部分为False
+#         vehicle_primal_pos_loc[:, self.num_locs:] = False
         
-        # 保存修改后的vehicle_primal_pos_loc（充电站重置后）
-        if self.fname is not None and hasattr(self, 'mask_calc_log'):
-            current_step_log["intermediate_results"]["vehicle_primal_pos_nodes_after_focus_on_loc"] = vehicle_primal_pos_loc[batch].clone().detach().cpu()
+#         # 保存修改后的vehicle_primal_pos_loc（充电站重置后）
+#         if self.fname is not None and hasattr(self, 'mask_calc_log'):
+#             current_step_log["intermediate_results"]["vehicle_primal_pos_nodes_after_focus_on_loc"] = vehicle_primal_pos_loc[batch].clone().detach().cpu()
 
 
-#         标记车辆无法到达的节点
-# 考虑电量和时间限制
-        # mask 2: forbits vehicles to move between two different depots
-        # i.e., if a selcted vechile is currently at a depot, it cannot visit other depots in the next step (but it can stay in the same depot)
+# #         标记车辆无法到达的节点
+# # 考虑电量和时间限制
+#         # mask 2: forbits vehicles to move between two different depots
+#         # i.e., if a selcted vechile is currently at a depot, it cannot visit other depots in the next step (but it can stay in the same depot)
 
-        #取消depot到depot的限制
-        # mask 3: vehicles cannot visit a location/depot that other vehicles are visiting
-        self.mask_visited_locs(mask)
-    # Only add to mask_calc_log if it exists
-        if self.fname is not None and hasattr(self, 'mask_calc_log'):
-            current_step_log["rule_masks"]["after_visited_locs"] = mask[batch].clone().detach().cpu()
+#         #取消depot到depot的限制
+#         # mask 3: vehicles cannot visit a location/depot that other vehicles are visiting
+#         self.mask_visited_locs(mask)
+#     # Only add to mask_calc_log if it exists
+#         if self.fname is not None and hasattr(self, 'mask_calc_log'):
+#             current_step_log["rule_masks"]["after_visited_locs"] = mask[batch].clone().detach().cpu()
         
 
 
-        # 在这里插入规则3.5的代码
-        # 规则3.5: 屏蔽已经访问过的客户点
-        # 将 self.loc_visited [batch_size, num_locs] 扩展到 [batch_size, num_nodes]
-        padded_visited_mask = torch.cat(
-            (self.loc_visited,
-            torch.full((self.batch_size, self.num_depots), False, dtype=torch.bool, device=self.device)),
-            dim=1
-        )
-        # 记录日志
-        if self.fname is not None and hasattr(self, 'mask_calc_log'):
-            current_step_log["intermediate_results"]["visited_locations"] = self.loc_visited[batch].clone().detach().cpu()
-            current_step_log["intermediate_results"]["padded_visited_mask"] = padded_visited_mask[batch].clone().detach().cpu()
-        # 保存应用规则3.5前的掩码
-        mask_before_rule3_5 = mask.clone()
-        # 应用规则3.5：已访问客户点不可再访问
-        mask *= ~padded_visited_mask
-        # 记录日志
-        if self.fname is not None and hasattr(self, 'mask_calc_log'):
-            current_step_log["rule_masks"]["before_rule3_5"] = mask_before_rule3_5[batch].clone().detach().cpu()
-            current_step_log["rule_masks"]["after_rule3_5"] = mask[batch].clone().detach().cpu()
+#         # 在这里插入规则3.5的代码
+#         # 规则3.5: 屏蔽已经访问过的客户点
+#         # 将 self.loc_visited [batch_size, num_locs] 扩展到 [batch_size, num_nodes]
+#         padded_visited_mask = torch.cat(
+#             (self.loc_visited,
+#             torch.full((self.batch_size, self.num_depots), False, dtype=torch.bool, device=self.device)),
+#             dim=1
+#         )
+#         # 记录日志
+#         if self.fname is not None and hasattr(self, 'mask_calc_log'):
+#             current_step_log["intermediate_results"]["visited_locations"] = self.loc_visited[batch].clone().detach().cpu()
+#             current_step_log["intermediate_results"]["padded_visited_mask"] = padded_visited_mask[batch].clone().detach().cpu()
+#         # 保存应用规则3.5前的掩码
+#         # mask_before_rule3_5 = mask.clone()
+#         # 应用规则3.5：已访问客户点不可再访问
+#         mask *= ~padded_visited_mask
+#         # 记录日志
+#         if self.fname is not None and hasattr(self, 'mask_calc_log'):
+#             current_step_log["rule_masks"]["before_rule3_5"] = mask_before_rule3_5[batch].clone().detach().cpu()
+#             current_step_log["rule_masks"]["after_rule3_5"] = mask[batch].clone().detach().cpu()
 
         # 规则4: 屏蔽从一个充电站到另一个充电站的移动
         at_depot = next_node_id.ge(self.num_locs)
@@ -3293,108 +3320,151 @@ class CIRPState(object):
         # 写入文件
         with open(txt_path, "w") as f:
             f.write("===== 掩码计算过程详细记录 =====\n\n")
-            
-            for log_entry in self.mask_calc_log[batch]:
-                # 写入步骤基本信息
-                f.write(f"步骤 {log_entry['step']} (时间: {log_entry['time']:.3f})\n")
-                f.write(f"决策车辆: {log_entry['acting_vehicle']}\n")
-                f.write(f"当前位置: {log_entry['current_node']}\n\n")
-                
-                # 写入初始掩码
-                f.write("初始掩码 (所有节点可访问):\n")
-                f.write(f"  {format_mask(log_entry['rule_masks'].get('initial'), self.num_locs)}\n\n")
-                
-                # 规则1: 放电限制
-                f.write("规则1: 电量达到放电下限时必须返回充电站\n")
-                f.write(f"  是否触发: {log_entry['intermediate_results'].get('discharge_limit_triggered', False)}\n")
-                f.write(f"  应用后: {format_mask(log_entry['rule_masks'].get('after_discharge_limit'), self.num_locs)}\n\n")
-                
-                # 规则2: 无法返回节点
-                f.write("规则2: 屏蔽无法返回的节点 (电量/时间不足)\n")
-                f.write(f"  应用后: {format_mask(log_entry['rule_masks'].get('after_unreturnable'), self.num_locs)}\n\n")
-                
-                # 规则3: 已访问节点
-                f.write("规则3: 屏蔽已被其他车辆访问的节点\n")
-                
-                # 显示原始位置信息（包括充电站）
-                vehicle_primal_pos_nodes = log_entry['intermediate_results'].get('vehicle_primal_pos_nodes')
-                if vehicle_primal_pos_nodes is not None:
-                    f.write("  原始位置 (包括充电站):\n")
-                    f.write(f"  {format_mask(vehicle_primal_pos_nodes, self.num_locs)}\n")
-                
-                # 显示关注loc后的位置信息
-                focus_on_loc_nodes = log_entry['intermediate_results'].get('vehicle_primal_pos_nodes_after_focus_on_loc')
-                if focus_on_loc_nodes is not None:
-                    f.write("  关注loc后的车辆位置:\n")
-                    f.write(f"  {format_mask(focus_on_loc_nodes, self.num_locs)}\n")
-                
-                # 显示规则应用前的掩码状态
-                before_mask = log_entry['rule_masks'].get('before_visited_locs')
-                if before_mask is not None:
-                    f.write("  应用规则前的掩码:\n")
-                    f.write(f"  {format_mask(before_mask, self.num_locs)}\n")
-                
-                # 显示应用规则后的结果
-                after_mask = log_entry['rule_masks'].get('after_visited_locs')
-                if after_mask is not None:
-                    f.write("  应用规则后的掩码:\n")
-                    f.write(f"  {format_mask(after_mask, self.num_locs)}\n\n")
-                
-                # 新增: 规则3.5: 屏蔽已访问过的客户点
-                f.write("规则3.5: 屏蔽已访问过的客户点\n")
-                
-                # 显示已访问客户点信息
-                visited_locations = log_entry['intermediate_results'].get('visited_locations')
-                if visited_locations is not None:
-                    f.write("  已访问客户点:\n")
-                    visited_str = ", ".join([f"基站{i}:{v}" for i, v in enumerate(visited_locations.tolist())])
-                    f.write(f"  [{visited_str}]\n")
-                
-                # 显示扩展后的掩码
-                padded_mask = log_entry['intermediate_results'].get('padded_visited_mask')
-                if padded_mask is not None:
-                    f.write("  扩展后的已访问掩码:\n")
-                    f.write(f"  {format_mask(padded_mask, self.num_locs)}\n")
-                
-                # 显示规则应用前的掩码
-                before_rule35_mask = log_entry['rule_masks'].get('before_rule3_5')
-                if before_rule35_mask is not None:
-                    f.write("  应用规则3.5前的掩码:\n")
-                    f.write(f"  {format_mask(before_rule35_mask, self.num_locs)}\n")
-                
-                # 显示规则应用后的掩码
-                after_rule35_mask = log_entry['rule_masks'].get('after_rule3_5')
-                if after_rule35_mask is not None:
-                    f.write("  应用规则3.5后的掩码:\n")
-                    f.write(f"  {format_mask(after_rule35_mask, self.num_locs)}\n\n")
+            for log_entry in self.mask_calc_log[batch]: # <-- 循环开始
+            # --- 修改日志部分 ---
+                # 打印全局永久标记访问状态
+                f.write("--- 全局永久标记已访问 (Move结束后) ---\n")
+                persistent_mask_tensor = log_entry['intermediate_results'].get('persistent_visited_mask')
 
-                f.write("--- 当前各车辆已知已访问基站状态 ---\n")
-                knowledge_mask = log_entry['intermediate_results'].get('vehicle_known_visited_locs')
-                # 调用新的辅助函数进行格式化
-                f.write(f"{format_vehicle_knowledge_mask(knowledge_mask, self.num_locs)}\n\n")
+                # 使用 format_mask 来格式化 (需要调整 format_mask 或在这里处理)
+                # 因为 persistent_visited_mask 只有 locs 部分，需要适配
+                if persistent_mask_tensor is not None:
+                    if not isinstance(persistent_mask_tensor, torch.Tensor):
+                        try:
+                            persistent_mask_tensor = torch.tensor(persistent_mask_tensor)
+                        except Exception as e:
+                            f.write(f"  Error converting persistent mask: {e}\n\n")
+                            persistent_mask_tensor = None # Prevent further errors
 
-                # 规则4: 充电站到充电站
-                f.write("规则4: 禁止从充电站直接到另一个充电站\n")
-                f.write(f"  当前在充电站: {log_entry['intermediate_results'].get('at_depot', False)}\n")
-                f.write(f"  应用后: {format_mask(log_entry['rule_masks'].get('after_depot_to_depot'), self.num_locs)}\n\n")
-                
-                # 规则5: 低功率充电站
-                f.write("规则5: 屏蔽低功率充电站\n")
-                small_depots = log_entry['intermediate_results'].get('small_depots')
-                if small_depots is not None:
-                    small_depots_indices = [i for i, x in enumerate(small_depots.tolist()) if x]
-                    f.write(f"  低功率站索引: {small_depots_indices}\n")
-                f.write(f"  应用后: {format_mask(log_entry['rule_masks'].get('after_small_depots'), self.num_locs)}\n\n")
-                
-                # 规则6: 跳过批次
-                f.write("规则6: 跳过的批次仅允许留在原地\n")
-                f.write(f"  是否跳过: {log_entry['intermediate_results'].get('is_skipped', False)}\n")
-                f.write(f"  应用后: {format_mask(log_entry['rule_masks'].get('after_skipped'), self.num_locs)}\n\n")
-                
-                # 最终掩码
-                f.write("最终掩码 (1=可访问, 0=禁止访问):\n")
-                f.write(f"  {format_mask(log_entry['final_mask'], self.num_locs)}\n")
-                f.write("-" * 80 + "\n\n")
+                    if persistent_mask_tensor is not None:
+                        mask_list = persistent_mask_tensor.cpu().int().tolist()
+                        # 只显示基站部分
+                        loc_str = ", ".join([f"基站{i}:{v}" for i, v in enumerate(mask_list)])
+                        f.write(f"  基站: [{loc_str}]\n\n")
+                else:
+                    f.write("  N/A\n\n")
+
+                for log_entry in self.mask_calc_log[batch]:
+                    # 写入步骤基本信息
+                    f.write(f"步骤 {log_entry['step']} (时间: {log_entry['time']:.3f})\n")
+                    f.write(f"决策车辆: {log_entry['acting_vehicle']}\n")
+                    f.write(f"当前位置: {log_entry['current_node']}\n\n")
+                    
+                    # 写入初始掩码
+                    f.write("初始掩码 (所有节点可访问):\n")
+                    f.write(f"  {format_mask(log_entry['rule_masks'].get('initial'), self.num_locs)}\n\n")
+                    
+                    # 规则1: 放电限制
+                    f.write("规则1: 电量达到放电下限时必须返回充电站\n")
+                    f.write(f"  是否触发: {log_entry['intermediate_results'].get('discharge_limit_triggered', False)}\n")
+                    f.write(f"  应用后: {format_mask(log_entry['rule_masks'].get('after_discharge_limit'), self.num_locs)}\n\n")
+                    
+                    # 规则2: 无法返回节点
+                    f.write("规则2: 屏蔽无法返回的节点 (电量/时间不足)\n")
+                    f.write(f"  应用后: {format_mask(log_entry['rule_masks'].get('after_unreturnable'), self.num_locs)}\n\n")
+                    
+                    # # 规则3: 已访问节点
+                    # f.write("规则3: 屏蔽已被其他车辆访问的节点\n")
+                    
+                    # # 显示原始位置信息（包括充电站）
+                    # vehicle_primal_pos_nodes = log_entry['intermediate_results'].get('vehicle_primal_pos_nodes')
+                    # if vehicle_primal_pos_nodes is not None:
+                    #     f.write("  原始位置 (包括充电站):\n")
+                    #     f.write(f"  {format_mask(vehicle_primal_pos_nodes, self.num_locs)}\n")
+                    
+                    # # 显示关注loc后的位置信息
+                    # focus_on_loc_nodes = log_entry['intermediate_results'].get('vehicle_primal_pos_nodes_after_focus_on_loc')
+                    # if focus_on_loc_nodes is not None:
+                    #     f.write("  关注loc后的车辆位置:\n")
+                    #     f.write(f"  {format_mask(focus_on_loc_nodes, self.num_locs)}\n")
+                    
+                    # # 显示规则应用前的掩码状态
+                    # before_mask = log_entry['rule_masks'].get('before_visited_locs')
+                    # if before_mask is not None:
+                    #     f.write("  应用规则前的掩码:\n")
+                    #     f.write(f"  {format_mask(before_mask, self.num_locs)}\n")
+                    
+                    # # 显示应用规则后的结果
+                    # after_mask = log_entry['rule_masks'].get('after_visited_locs')
+                    # if after_mask is not None:
+                    #     f.write("  应用规则后的掩码:\n")
+                    #     f.write(f"  {format_mask(after_mask, self.num_locs)}\n\n")
+                    
+                    # # 新增: 规则3.5: 屏蔽已访问过的客户点
+                    # f.write("规则3.5: 屏蔽已访问过的客户点\n")
+                    
+                    # # 显示已访问客户点信息
+                    # visited_locations = log_entry['intermediate_results'].get('visited_locations')
+                    # if visited_locations is not None:
+                    #     f.write("  已访问客户点:\n")
+                    #     visited_str = ", ".join([f"基站{i}:{v}" for i, v in enumerate(visited_locations.tolist())])
+                    #     f.write(f"  [{visited_str}]\n")
+                    
+                    # # 显示扩展后的掩码
+                    # padded_mask = log_entry['intermediate_results'].get('padded_visited_mask')
+                    # if padded_mask is not None:
+                    #     f.write("  扩展后的已访问掩码:\n")
+                    #     f.write(f"  {format_mask(padded_mask, self.num_locs)}\n")
+                    
+                    # # 显示规则应用前的掩码
+                    # before_rule35_mask = log_entry['rule_masks'].get('before_rule3_5')
+                    # if before_rule35_mask is not None:
+                    #     f.write("  应用规则3.5前的掩码:\n")
+                    #     f.write(f"  {format_mask(before_rule35_mask, self.num_locs)}\n")
+                    
+                    # # 显示规则应用后的掩码
+                    # after_rule35_mask = log_entry['rule_masks'].get('after_rule3_5')
+                    # if after_rule35_mask is not None:
+                    #     f.write("  应用规则3.5后的掩码:\n")
+                    #     f.write(f"  {format_mask(after_rule35_mask, self.num_locs)}\n\n")
+
+                    # 打印车辆实时认知状态 (如果保留)
+                    f.write("--- 当前各车辆/全局已知已访问基站状态 ---\n") # 更新标题以反映全局可能性
+                    knowledge_mask = log_entry.get('intermediate_results', {}).get('vehicle_known_visited_locs')
+                    f.write(f"{format_vehicle_knowledge_mask(knowledge_mask, self.num_locs)}\n\n")
+
+                    # --- 新位置: 打印全局永久标记访问状态 ---
+                    f.write("--- 全局永久标记已访问 (Move结束后) ---\n")
+                    persistent_mask_tensor = log_entry.get('intermediate_results', {}).get('persistent_visited_mask')
+                    if persistent_mask_tensor is not None:
+                        try:
+                            if not isinstance(persistent_mask_tensor, torch.Tensor):
+                                persistent_mask_tensor = torch.tensor(persistent_mask_tensor)
+                            mask_list = persistent_mask_tensor.cpu().int().tolist()
+                            loc_str = ", ".join([f"基站{i}:{v}" for i, v in enumerate(mask_list)])
+                            f.write(f"  基站: [{loc_str}]\n\n")
+                        except Exception as e:
+                            f.write(f"  Error formatting persistent mask: {e}\n\n")
+                    else:
+                        f.write("  N/A\n\n")
+                    # --- 打印结束 ---
+
+                    # 规则4: 充电站到充电站 (保留)
+                    f.write("规则4: 禁止从充电站直接到另一个充电站\n")
+                    f.write(f"  当前在充电站: {log_entry.get('intermediate_results', {}).get('at_depot', 'N/A')}\n")
+                    f.write(f"  应用后: {format_mask(log_entry.get('rule_masks', {}).get('after_depot_to_depot'), self.num_locs)}\n\n")
+
+                    # 规则5: 低功率充电站 (保留)
+                    f.write("规则5: 屏蔽低功率充电站\n")
+                    small_depots = log_entry.get('intermediate_results', {}).get('small_depots')
+                    if small_depots is not None:
+                        try: # 添加try-except
+                            small_depots_indices = [i for i, x in enumerate(small_depots.tolist()) if x]
+                            f.write(f"  低功率站索引: {small_depots_indices}\n")
+                        except AttributeError: # 如果small_depots不是Tensor或没有tolist
+                            f.write(f"  低功率站数据格式错误: {type(small_depots)}\n")
+                    f.write(f"  应用后: {format_mask(log_entry.get('rule_masks', {}).get('after_small_depots'), self.num_locs)}\n\n")
+
+                    # 规则6: 跳过批次 (保留)
+                    f.write("规则6: 跳过的批次仅允许留在原地\n")
+                    f.write(f"  是否跳过: {log_entry.get('intermediate_results', {}).get('is_skipped', 'N/A')}\n")
+                    f.write(f"  应用后: {format_mask(log_entry.get('rule_masks', {}).get('after_skipped'), self.num_locs)}\n\n")
+
+                    # 最终掩码
+                    f.write("最终决策掩码 (1=可访问, 0=禁止访问):\n")
+                    f.write(f"  {format_mask(log_entry.get('final_mask'), self.num_locs)}\n")
+                    f.write("-" * 80 + "\n\n")
+                # <-- 循环结束
                 
     def _visualize_action_history(self, batch, action_history_data):
         """生成动作历史的可视化图表"""
