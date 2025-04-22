@@ -430,6 +430,7 @@ class CIRPState(object):
         # 之后改
         self.vehicle_known_visited_locs = torch.full((self.batch_size, self.num_vehicles, self.num_locs), False, dtype=torch.bool, device=device) # 或者全局版本，取决于你最终的选择
         self.persistent_visited_mask = torch.full((self.batch_size, self.num_locs), False, dtype=torch.bool, device=device)
+        self.vehicle_revisit_counts = torch.zeros((self.batch_size, self.num_vehicles), dtype=torch.long, device=device)
         self.next_vehicle_id = torch.zeros(self.batch_size, dtype=torch.long, device=device) # firstly allocate 0-th vehicles
         self.skip = torch.full((self.batch_size,), False, dtype=bool, device=device) # [batch_size]
         self.end  = torch.full((self.batch_size,), False, dtype=bool, device=device) # [batch_size]
@@ -731,9 +732,9 @@ class CIRPState(object):
             # 更新 self.loc_visited 状态
             self.loc_visited[batch_indices, loc_indices] = True
             # 之后改 改mask
-            updated_loc_visited_rows = self.loc_visited[batch_indices, :]
-            expanded_rows = updated_loc_visited_rows.unsqueeze(1).expand(-1, self.num_vehicles, -1)
-            self.vehicle_known_visited_locs[batch_indices, :, :] = expanded_rows
+            # updated_loc_visited_rows = self.loc_visited[batch_indices, :]
+            # expanded_rows = updated_loc_visited_rows.unsqueeze(1).expand(-1, self.num_vehicles, -1)
+            # self.vehicle_known_visited_locs[batch_indices, :, :] = expanded_rows
             # 更新首次访问时间（只记录尚未访问过的节点）
             for b, loc_idx in zip(batch_indices, loc_indices):
                 if self.loc_first_visit_time[b, loc_idx] < 0:
@@ -1280,8 +1281,22 @@ class CIRPState(object):
         _charge_phase = (self.vehicle_phase == self.phase_id["charge"])
         _at_depot = self.is_depot(self.vehicle_position_id)
         queued_vehicles = (self.charge_queue.sum(1) > 1)
-        num_waiting_vehicles = (queued_vehicles & _charge_phase & _at_depot).sum(dim=1).float()
-        self.accumulated_conflict_cost += num_waiting_vehicles * elapsed_time * update_batch.float()
+        #num_waiting_vehicles = (queued_vehicles & _charge_phase & _at_depot).sum(dim=1).float()
+                # --- 修改: 计算包含所有车辆重复访问总数的“等效”等待车辆数 ---
+        # 1. 计算原始的实际排队车辆数量
+        num_waiting_vehicles = (queued_vehicles).sum(dim=1).float() # shape: [batch_size]
+
+        # 2. 计算所有车辆的重复访问总次数 (对每个批次求和)
+        total_revisit_counts_all_vehicles = self.vehicle_revisit_counts.sum(dim=1).float() # shape: [batch_size]
+
+        # 3. 计算“调整后”的等待车辆数 = 实际等待数 + 所有车辆重复访问总数
+        adjusted_num_waiting_vehicles = num_waiting_vehicles + total_revisit_counts_all_vehicles
+        # --- 修改结束 ---
+
+        # 使用调整后的数量来累加冲突成本
+        self.accumulated_conflict_cost += adjusted_num_waiting_vehicles * elapsed_time * update_batch.float() 
+
+        #self.accumulated_conflict_cost += num_waiting_vehicles * elapsed_time * update_batch.float()
     #    #    self.penalty_empty_locs += (
     #     num_empty_locs.sum(-1) *     # 所有基站的电量不足时间总和
     #     update_batch /               # 只更新指定批次
@@ -1414,28 +1429,62 @@ class CIRPState(object):
             # 之后改--- 修改：车辆到达充电站入队逻辑 ---
             next_vehicle_on_move = next_vehicles_on_update_batch & (self.vehicle_phase == self.phase_id["move"])
 
-            # --- 修改代码: 更新全局永久访问掩码 ---
             if next_vehicle_on_move.any(): # 只有当确实有车辆完成移动时才执行
-                # 找出哪些批次完成了移动
-                batch_indices = torch.where(next_vehicle_on_move.any(dim=1))[0] # 找到至少有一辆车完成移动的批次索引
+                # --- 计算所有需要的索引 ---
+                # 使用 torch.where 获取完成移动的批次和车辆索引
+                batch_indices, vehicle_indices = torch.where(next_vehicle_on_move)
 
                 # 获取这些批次中完成移动的车辆对应的目标节点 ID
-                # next_node_id 的形状是 [batch_size]，它对应 next_vehicle_id
-                # 我们只关心那些完成移动的批次的目标节点
                 destination_nodes = next_node_id[batch_indices]
 
                 # 创建一个掩码，只选择那些目标是客户点（loc）的情况
                 is_loc_destination = destination_nodes < self.num_locs
 
-                # 筛选出有效的批次索引和对应的客户点（loc）索引
+                # 筛选出有效的批次索引、车辆索引和对应的客户点（loc）索引
                 valid_batch_indices = batch_indices[is_loc_destination]
+                valid_vehicle_indices = vehicle_indices[is_loc_destination] # <--- 确保这一行存在且没有被注释掉
                 valid_loc_indices = destination_nodes[is_loc_destination]
+                # --- 索引计算结束 ---
 
-                # 更新全局 persistent_visited_mask 中对应的条目为 True
-                if valid_loc_indices.numel() > 0: # 确保有有效的客户点索引
-                    # 使用高级索引直接更新
+                # 更新全局 persistent_visited_mask (如果需要)
+                if valid_loc_indices.numel() > 0:
+                    # --- 新增代码: 检查并计数重复访问 ---
+                    # 检查这些目标客户点在 *全局永久标记* 中是否已经是 True
+                    already_visited_globally = self.persistent_visited_mask[valid_batch_indices, valid_loc_indices]
+
+                    # 找出需要计数的批次和车辆索引（即移动完成 & 目标是客户点 & 该客户点已被全局永久标记）
+                    batches_to_increment = valid_batch_indices[already_visited_globally]
+                    vehicles_to_increment = valid_vehicle_indices[already_visited_globally]
+
+                    # 如果存在需要计数的情况，则增加对应车辆的计数器
+                    if vehicles_to_increment.numel() > 0:
+                        # 创建一个临时的零张量用于累加
+                        revisit_updates = torch.zeros_like(self.vehicle_revisit_counts)
+                        # 在需要增加计数的位置标记为 1
+                        revisit_updates[batches_to_increment, vehicles_to_increment] = 1
+                        # 将增量加到总计数上
+                        self.vehicle_revisit_counts += revisit_updates
+                    # --- 新增代码结束 ---
+                    
                     self.persistent_visited_mask[valid_batch_indices, valid_loc_indices] = True
-            # --- 修改代码结束 ---
+
+                    # --- 修改代码: 将最新的全局永久状态赋给完成移动的车辆 ---
+                    # 筛选出那些 *刚刚完成到客户点移动* 的车辆的批次和车辆索引
+                    # (这些索引已经通过 is_loc_destination 筛选过了)
+                    update_batches = valid_batch_indices
+                    update_vehicles = valid_vehicle_indices
+
+                    # 获取这些批次对应的 *当前* 全局永久访问状态
+                    # persistent_visited_mask 的形状是 [batch_size, num_locs]
+                    # 我们需要为每个完成移动的车辆提取其所在批次的全局状态
+                    current_global_persistent_state = self.persistent_visited_mask[update_batches, :]
+                    # current_global_persistent_state 的形状是 [完成移动的车辆数, num_locs]
+
+                    # 将提取出的全局状态，赋值给对应车辆的认知掩码行
+                    # self.vehicle_known_visited_locs 的形状是 [batch_size, num_vehicles, num_locs]
+                    # 我们使用 update_batches 和 update_vehicles 来定位要更新的车辆
+                    self.vehicle_known_visited_locs[update_batches, update_vehicles, :] = current_global_persistent_state
+                    # --- 修改代码结束 ---
 
             if next_vehicle_on_move.sum() > 0:
                 # 添加准备时间
@@ -1699,6 +1748,8 @@ class CIRPState(object):
         current_step_log["intermediate_results"]["persistent_visited_mask"] = \
                  self.persistent_visited_mask[batch].clone().detach().cpu()
 
+        current_step_log["intermediate_results"]["vehicle_revisit_counts"] = \
+                 self.vehicle_revisit_counts[batch].clone().detach().cpu()
         
         #创建全1矩阵，初始状态所有节点都可访问
         mask = torch.ones(self.batch_size, self.num_nodes, dtype=torch.int32, device=self.device) # [batch_size x num_nodes]
@@ -1797,6 +1848,39 @@ class CIRPState(object):
         # mask 4: forbit vehicles to visit depots that have small discharge rate
 #         标记其他车辆正在访问的节点为不可访问
 # 避免多车同时访问同一节点
+
+
+        # --- 新增: 规则 4.5 ---
+        # 屏蔽当前决策车辆已知的已访问客户点
+        # 1. 获取当前决策车辆的索引 (每个批次一个)
+        idx_batch = torch.arange(self.batch_size, device=self.device)
+        idx_vehicle = self.next_vehicle_id # shape: [batch_size]
+
+        # 2. 提取这些车辆各自的认知掩码 (只关心客户点部分)
+        # self.vehicle_known_visited_locs shape: [batch_size, num_vehicles, num_locs]
+        # current_vehicle_knowledge shape: [batch_size, num_locs]
+        current_vehicle_knowledge = self.vehicle_known_visited_locs[idx_batch, idx_vehicle, :]
+
+        # 3. 创建一个完整的节点掩码用于限制
+        #    客户点部分使用车辆的认知，充电站部分允许访问（设为False表示不限制）
+        knowledge_restriction_mask_locs = current_vehicle_knowledge # True 表示已知已访问，应屏蔽
+        knowledge_restriction_mask_depots = torch.full((self.batch_size, self.num_depots), False, dtype=torch.bool, device=self.device)
+        knowledge_restriction_mask = torch.cat(
+            (knowledge_restriction_mask_locs, knowledge_restriction_mask_depots),
+            dim=1
+        ) # shape: [batch_size, num_nodes]
+
+        # 4. 应用掩码: mask 中对应 True 的位置（已知已访问的客户点）变为 0
+        mask *= ~knowledge_restriction_mask
+
+        # 5. 记录日志
+        if current_step_log is not None:
+            # 记录当前车辆的认知状态，用于理解规则应用
+            current_step_log["intermediate_results"]["rule4_5_current_vehicle_knowledge"] = current_vehicle_knowledge[batch].clone().detach().cpu()
+            # 记录应用规则后的掩码状态
+            current_step_log["rule_masks"]["after_rule4_5_knowledge"] = mask[batch].clone().detach().cpu()
+        # --- 规则 4.5 结束 ---
+
         # 规则5: 屏蔽低功率充电站
         small_depots = self.get_unavail_depots(next_node_id)
         # Only add to mask_calc_log if it exists
@@ -3316,12 +3400,27 @@ class CIRPState(object):
                       output_str += f"  车辆 {v_idx} 已知: [数据错误或不完整]\n" # 添加错误处理
 
             return output_str.strip() # 移除末尾的换行符
-        
+
+        # --- 新增辅助函数: 格式化车辆重复访问计数 ---
+        def format_revisit_counts(counts_tensor):
+            if counts_tensor is None: return "N/A"
+            try:
+                if not isinstance(counts_tensor, torch.Tensor): counts_tensor = torch.tensor(counts_tensor)
+                counts_list = counts_tensor.cpu().long().tolist()
+                return ", ".join([f"车辆{i}:{c}" for i, c in enumerate(counts_list)])
+            except Exception as e: return f"Error formatting revisit counts: {e}"
+        # --- 辅助函数结束 ---
+
         # 写入文件
         with open(txt_path, "w") as f:
             f.write("===== 掩码计算过程详细记录 =====\n\n")
             for log_entry in self.mask_calc_log[batch]: # <-- 循环开始
             # --- 修改日志部分 ---
+                 # --- 新增日志部分: 显示重复访问计数 ---
+                f.write("--- 车辆重复访问计数 (到达已全局标记地点时+1) ---\n")
+                revisit_counts = log_entry.get('intermediate_results', {}).get('vehicle_revisit_counts')
+                f.write(f"  当前计数: [{format_revisit_counts(revisit_counts)}]\n\n")
+                # --- 新增部分结束 ---
                 # 打印全局永久标记访问状态
                 f.write("--- 全局永久标记已访问 (Move结束后) ---\n")
                 persistent_mask_tensor = log_entry['intermediate_results'].get('persistent_visited_mask')
@@ -3443,6 +3542,21 @@ class CIRPState(object):
                     f.write("规则4: 禁止从充电站直接到另一个充电站\n")
                     f.write(f"  当前在充电站: {log_entry.get('intermediate_results', {}).get('at_depot', 'N/A')}\n")
                     f.write(f"  应用后: {format_mask(log_entry.get('rule_masks', {}).get('after_depot_to_depot'), self.num_locs)}\n\n")
+                    # --- 新增: 规则 4.5 日志 ---
+                    f.write("规则4.5: 屏蔽当前决策车辆已知的已访问客户点\n")
+                    # 显示当前决策车辆的认知状态
+                    veh_knowledge = log_entry.get('intermediate_results', {}).get('rule4_5_current_vehicle_knowledge')
+                    if veh_knowledge is not None:
+                        try:
+                            if not isinstance(veh_knowledge, torch.Tensor): veh_knowledge = torch.tensor(veh_knowledge)
+                            knowledge_list = veh_knowledge.cpu().int().tolist()
+                            loc_str = ", ".join([f"基站{i}:{v}" for i, v in enumerate(knowledge_list)])
+                            f.write(f"  当前决策车辆 ({log_entry.get('acting_vehicle', '?')}) 已知: [{loc_str}]\n") # 增加决策车辆ID
+                        except Exception as e: f.write(f"  Error formatting vehicle knowledge: {e}\n")
+                    else: f.write("  当前决策车辆已知: N/A\n")
+                    # 显示应用规则4.5后的掩码
+                    f.write(f"  应用后: {format_mask(log_entry.get('rule_masks', {}).get('after_rule4_5_knowledge'), self.num_locs)}\n\n")
+                    # --- 规则 4.5 日志结束 ---
 
                     # 规则5: 低功率充电站 (保留)
                     f.write("规则5: 屏蔽低功率充电站\n")
