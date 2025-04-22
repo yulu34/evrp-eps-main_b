@@ -1,0 +1,9 @@
+__pycache__/
+data/
+checkpoints/
+results/
+images/
+output/
+results/
+view_pkl/
+alo.md
