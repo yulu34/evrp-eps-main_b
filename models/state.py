@@ -427,7 +427,7 @@ class CIRPState(object):
         # common dynamic state
         #----------------------
         self.loc_visited = torch.full((self.batch_size, self.num_locs), False, dtype=torch.bool, device=device)
-    
+        self.vehicle_known_visited_locs = torch.full((self.batch_size, self.num_vehicles, self.num_locs), False, dtype=torch.bool, device=device)
         self.next_vehicle_id = torch.zeros(self.batch_size, dtype=torch.long, device=device) # firstly allocate 0-th vehicles
         self.skip = torch.full((self.batch_size,), False, dtype=bool, device=device) # [batch_size]
         self.end  = torch.full((self.batch_size,), False, dtype=bool, device=device) # [batch_size]
@@ -728,7 +728,10 @@ class CIRPState(object):
             loc_indices = next_node_id[is_loc_target]
             # 更新 self.loc_visited 状态
             self.loc_visited[batch_indices, loc_indices] = True
-
+            # 之后改 改mask
+            updated_loc_visited_rows = self.loc_visited[batch_indices, :]
+            expanded_rows = updated_loc_visited_rows.unsqueeze(1).expand(-1, self.num_vehicles, -1)
+            self.vehicle_known_visited_locs[batch_indices, :, :] = expanded_rows
             # 更新首次访问时间（只记录尚未访问过的节点）
             for b, loc_idx in zip(batch_indices, loc_indices):
                 if self.loc_first_visit_time[b, loc_idx] < 0:
@@ -1666,6 +1669,8 @@ class CIRPState(object):
             "intermediate_results": {}
         }
         # 在断言前添加这段代
+        current_step_log["intermediate_results"]["vehicle_known_visited_locs"] = \
+                 self.vehicle_known_visited_locs[batch].clone().detach().cpu()
 
         
         #创建全1矩阵，初始状态所有节点都可访问
@@ -3254,6 +3259,36 @@ class CIRPState(object):
                     f"  [{loc_str}]\n" 
                     f"充电站:\n"
                     f"  [{depot_str}]")
+
+        def format_vehicle_knowledge_mask(knowledge_tensor, num_locs):
+            """格式化车辆认知掩码以便阅读"""
+            if knowledge_tensor is None:
+                return "N/A"
+
+            if not isinstance(knowledge_tensor, torch.Tensor):
+                 # 尝试转换，如果失败则返回错误字符串
+                try:
+                    knowledge_tensor = torch.tensor(knowledge_tensor)
+                except Exception as e:
+                    return f"Error converting knowledge tensor: {e}"
+
+
+            # 确保在 CPU 上再转换为列表
+            knowledge_list_per_vehicle = knowledge_tensor.cpu().bool().tolist() # 形状 [num_vehicles, num_locs]
+            output_str = ""
+            num_vehicles_in_tensor = len(knowledge_list_per_vehicle)
+            # 遍历每辆车
+            for v_idx in range(num_vehicles_in_tensor):
+                 # 检查当前车辆的知识列表是否足够长
+                 if len(knowledge_list_per_vehicle[v_idx]) >= num_locs:
+                      vehicle_knowledge = knowledge_list_per_vehicle[v_idx][:num_locs] # 只取locs部分
+                      # 格式化每个基站的认知状态 (True/False)
+                      loc_knowledge_str = ", ".join([f"基站{l_idx}:{v}" for l_idx, v in enumerate(vehicle_knowledge)])
+                      output_str += f"  车辆 {v_idx} 已知: [{loc_knowledge_str}]\n"
+                 else:
+                      output_str += f"  车辆 {v_idx} 已知: [数据错误或不完整]\n" # 添加错误处理
+
+            return output_str.strip() # 移除末尾的换行符
         
         # 写入文件
         with open(txt_path, "w") as f:
@@ -3332,6 +3367,11 @@ class CIRPState(object):
                 if after_rule35_mask is not None:
                     f.write("  应用规则3.5后的掩码:\n")
                     f.write(f"  {format_mask(after_rule35_mask, self.num_locs)}\n\n")
+
+                f.write("--- 当前各车辆已知已访问基站状态 ---\n")
+                knowledge_mask = log_entry['intermediate_results'].get('vehicle_known_visited_locs')
+                # 调用新的辅助函数进行格式化
+                f.write(f"{format_vehicle_knowledge_mask(knowledge_mask, self.num_locs)}\n\n")
                 
                 # 规则4: 充电站到充电站
                 f.write("规则4: 禁止从充电站直接到另一个充电站\n")

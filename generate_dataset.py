@@ -322,7 +322,7 @@ if __name__ == "__main__":
     
     parser.add_argument("--num_depots", type=int, default=1) 
     parser.add_argument("--num_locs", type=int, default=50)
-    parser.add_argument("--num_vehicles", type=int, default=20)
+    parser.add_argument("--num_vehicles", type=int, default=10)
     #问题规模参数
     parser.add_argument("--vehicle_cap", type=float, default=60.0) # all the vehicles have the same capacity
     # parser.add_argument("--vehicle_discharge_rate", type=float, default=10.0) #删除
