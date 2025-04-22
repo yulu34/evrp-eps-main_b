@@ -9,9 +9,9 @@ class AMDecoder(nn.Module):
         self.w_k = nn.Parameter(torch.Tensor(emb_dim, emb_dim))
         self.norm_factor = 1. / math.sqrt(emb_dim)
         self.tanh_clipping = 10.
-        self.reset_paramters()
+        self.focus_on_loc_paramters()
 
-    def reset_paramters(self):
+    def focus_on_loc_paramters(self):
         for param in self.parameters():
             stdv = 1. / math.sqrt(param.size(-1))
             param.data.uniform_(-stdv, stdv)

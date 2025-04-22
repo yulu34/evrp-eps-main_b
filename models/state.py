@@ -630,7 +630,7 @@ class CIRPState(object):
 #     ],
 #     # ... 其他掩码历史
 # }
-    def reset(self, input):
+    def focus_on_loc(self, input):
         self.__init__(input)
 
     def get_coordinates(self, node_id: torch.Tensor):
@@ -1460,7 +1460,7 @@ class CIRPState(object):
             next_vehicle_on_pre = next_vehicles_on_update_batch & (self.vehicle_phase == self.phase_id["pre"]) # [batch_size x num_vehicles]
             if next_vehicle_on_pre.sum() > 0:
                 self.vehicle_unavail_time += self.vehicle_work_time * next_vehicle_on_pre
-                self.vehicle_pre_time *= ~next_vehicle_on_pre # reset pre time
+                self.vehicle_pre_time *= ~next_vehicle_on_pre # focus_on_loc pre time
             
             #----------------------------
             # charging -> post operation
@@ -1703,22 +1703,22 @@ class CIRPState(object):
             current_step_log["rule_masks"]["after_unreturnable"] = mask[batch].clone().detach().cpu()
 
         # 规则3: 屏蔽已被其他车辆访问的节点
-        reserved_loc = torch.full((self.batch_size, self.num_nodes), False, device=self.device)
-        reserved_loc.scatter_(1, self.vehicle_position_id, True)
+        vehicle_primal_pos_loc = torch.full((self.batch_size, self.num_nodes), False, device=self.device)
+        vehicle_primal_pos_loc.scatter_(1, self.vehicle_position_id, True)
         # Only add to mask_calc_log if it exists
         if self.fname is not None and hasattr(self, 'mask_calc_log'):
-            current_step_log["intermediate_results"]["reserved_nodes"] = reserved_loc[batch].clone().detach().cpu()
+            current_step_log["intermediate_results"]["vehicle_primal_pos_nodes"] = vehicle_primal_pos_loc[batch].clone().detach().cpu()
 
         # # 保存规则3应用前的掩码状态
         # if self.fname is not None and hasattr(self, 'mask_calc_log'):
             current_step_log["rule_masks"]["before_visited_locs"] = mask[batch].clone().detach().cpu()
         
-        # 重置充电站部分为False
-        reserved_loc[:, self.num_locs:] = False
+        # 关注loc部分为False
+        vehicle_primal_pos_loc[:, self.num_locs:] = False
         
-        # 保存修改后的reserved_loc（充电站重置后）
+        # 保存修改后的vehicle_primal_pos_loc（充电站重置后）
         if self.fname is not None and hasattr(self, 'mask_calc_log'):
-            current_step_log["intermediate_results"]["reserved_nodes_after_reset"] = reserved_loc[batch].clone().detach().cpu()
+            current_step_log["intermediate_results"]["vehicle_primal_pos_nodes_after_focus_on_loc"] = vehicle_primal_pos_loc[batch].clone().detach().cpu()
 
 
 #         标记车辆无法到达的节点
@@ -2101,24 +2101,24 @@ class CIRPState(object):
         ----------
         mask: torch.LongTensor [batch_size x num_nodes]
         """
-        reserved_loc = torch.full((self.batch_size, self.num_nodes), False, device=self.device)
+        vehicle_primal_pos_loc = torch.full((self.batch_size, self.num_nodes), False, device=self.device)
 #         创建一个全False的张量
 # 形状为 [batch_size × num_nodes]
 # 初始状态表示没有节点被访问
-        reserved_loc.scatter_(1, self.vehicle_position_id, True)
+        vehicle_primal_pos_loc.scatter_(1, self.vehicle_position_id, True)
         # 使用scatter_操作将车辆当前所在位置标记为True
-        reserved_loc[:, self.num_locs:] = False
+        vehicle_primal_pos_loc[:, self.num_locs:] = False
 #         将充电站部分重置为False
 # 表示充电站可以被多辆车同时访问
 # 之后改loc不能被多辆车同时访问 不懂这里为什么这么设置 有可能是这个原因 之前的测试中有些电站没有被访问
-        mask *= ~reserved_loc
-#         ~reserved_loc: 取反，True变False，False变True
+        mask *= ~vehicle_primal_pos_loc
+#         ~vehicle_primal_pos_loc: 取反，True变False，False变True
 # 将已访问节点在mask中对应位置设为0
 
 # 假设场景：batch_size=2, num_nodes=5, num_locs=3
 
-# 1. 初始reserved_loc
-# reserved_loc = [
+# 1. 初始vehicle_primal_pos_loc
+# vehicle_primal_pos_loc = [
 #     [False, False, False, False, False],  # batch 0
 #     [False, False, False, False, False]   # batch 1
 # ]
@@ -2129,8 +2129,8 @@ class CIRPState(object):
 #     [2]   # batch 1的车辆在节点2
 # ]
 
-# # 3. scatter_后的reserved_loc
-# reserved_loc = [
+# # 3. scatter_后的vehicle_primal_pos_loc
+# vehicle_primal_pos_loc = [
 #     [False, True,  False, False, False],  # batch 0
 #     [False, False, True,  False, False]   # batch 1
 # ]
@@ -2141,7 +2141,7 @@ class CIRPState(object):
 #     [1, 1, 1, 1, 1]   # batch 1
 # ]
 
-# # 5. 最终结果 mask *= ~reserved_loc
+# # 5. 最终结果 mask *= ~vehicle_primal_pos_loc
 # mask = [
 #     [1, 0, 1, 1, 1],  # batch 0: 节点1不可访问
 #     [1, 1, 0, 1, 1]   # batch 1: 节点2不可访问
@@ -3316,17 +3316,17 @@ class CIRPState(object):
                 # 规则3: 已访问节点
                 f.write("规则3: 屏蔽已被其他车辆访问的节点\n")
                 
-                # 显示原始车辆位置信息（包括充电站）
-                reserved_nodes = log_entry['intermediate_results'].get('reserved_nodes')
-                if reserved_nodes is not None:
-                    f.write("  原始车辆位置 (包括充电站):\n")
-                    f.write(f"  {format_mask(reserved_nodes, self.num_locs)}\n")
+                # 显示原始位置信息（包括充电站）
+                vehicle_primal_pos_nodes = log_entry['intermediate_results'].get('vehicle_primal_pos_nodes')
+                if vehicle_primal_pos_nodes is not None:
+                    f.write("  原始位置 (包括充电站):\n")
+                    f.write(f"  {format_mask(vehicle_primal_pos_nodes, self.num_locs)}\n")
                 
-                # 显示重置充电站后的位置信息
-                reset_nodes = log_entry['intermediate_results'].get('reserved_nodes_after_reset')
-                if reset_nodes is not None:
-                    f.write("  重置充电站后的车辆位置:\n")
-                    f.write(f"  {format_mask(reset_nodes, self.num_locs)}\n")
+                # 显示关注loc后的位置信息
+                focus_on_loc_nodes = log_entry['intermediate_results'].get('vehicle_primal_pos_nodes_after_focus_on_loc')
+                if focus_on_loc_nodes is not None:
+                    f.write("  关注loc后的车辆位置:\n")
+                    f.write(f"  {format_mask(focus_on_loc_nodes, self.num_locs)}\n")
                 
                 # 显示规则应用前的掩码状态
                 before_mask = log_entry['rule_masks'].get('before_visited_locs')
@@ -3372,7 +3372,7 @@ class CIRPState(object):
                 knowledge_mask = log_entry['intermediate_results'].get('vehicle_known_visited_locs')
                 # 调用新的辅助函数进行格式化
                 f.write(f"{format_vehicle_knowledge_mask(knowledge_mask, self.num_locs)}\n\n")
-                
+
                 # 规则4: 充电站到充电站
                 f.write("规则4: 禁止从充电站直接到另一个充电站\n")
                 f.write(f"  当前在充电站: {log_entry['intermediate_results'].get('at_depot', False)}\n")

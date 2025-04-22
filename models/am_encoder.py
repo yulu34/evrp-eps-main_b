@@ -39,9 +39,9 @@ class AMEncoder(nn.Module):
         self.vehicle_mha = nn.TransformerEncoder(vehicle_mha_layer, num_layers=num_mha_layers)
 
         # params initialization
-        self.reset_parameters()
+        self.focus_on_loc_parameters()
 
-    def reset_parameters(self):
+    def focus_on_loc_parameters(self):
         for param in self.parameters():
             stdv = 1. / math.sqrt(param.size(-1))
             param.data.uniform_(-stdv, stdv)
@@ -93,9 +93,9 @@ class AMEncoder(nn.Module):
 #         self.w_v = nn.Parameter(torch.Tensor(n_heads, input_dim, self.head_dim))
 #         self.w_o = nn.Parameter(torch.Tensor(n_heads, self.head_dim, embed_dim))
         
-#         self.reset_parameters()
+#         self.focus_on_loc_parameters()
 
-#     def reset_parameters(self):
+#     def focus_on_loc_parameters(self):
 #         for param in self.parameters():
 #             stdv = 1. / math.sqrt(param.size(-1))
 #             param.data.uniform_(-stdv, stdv)
