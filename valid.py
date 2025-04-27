@@ -100,7 +100,15 @@ def valid(args: argparse.Namespace) -> None:
         print(f"Evaluating the model at epoch{epoch} (currently best epoch is {best_epoch}: cost={min_cost})", flush=True)
         # load a trained model
         model_path = f"{args.model_dir}/model_epoch{epoch}.pth"
-        
+
+
+        # --- 简洁的条件判断 ---
+        # 只有在 epoch 0 或最后一个 epoch 时，才将 visualize_routes 设为 True
+        enable_visualization = (epoch == 0 or epoch == args.max_epoch)
+        print(f"  Visualization: {'ON' if enable_visualization else 'OFF'}")
+
+
+
         try:
             res = eval(dataset_path=args.dataset_path,
                       eval_batch_size=args.eval_batch_size,
@@ -113,7 +121,9 @@ def valid(args: argparse.Namespace) -> None:
                       time_horizon=args.time_horizon,
                       random_seed=1234,
                       gpu=args.gpu,
-                      num_workers=args.num_workers)
+                      num_workers=args.num_workers,
+                      visualize_routes=enable_visualization# <-- 传递条件
+                    ) 
             cost = res["avg_obj"]
             write_metrics_to_csv(res, args.output_dir)
         except AssertionError as e:

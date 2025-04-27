@@ -37,7 +37,7 @@ We train the RL model on the synthetic datasets. Check the other options with ``
 ```
 python train.py --dataset_path data/synthetic_data/train_dataset.pkl --checkpoint_dir checkpoints/demo_model --batch_size 256 --vehicle_speed 41 --wait_time 0.5 --time_horizon 12
 
-python train.py --dataset_path data/synthetic_data/train_dataset.pkl --checkpoint_dir checkpoints/demo_model --batch_size 256 --vehicle_speed 41 --wait_time 0.5 --time_horizon 3 --epoches 0
+python train.py --dataset_path data/synthetic_data/train_dataset.pkl --checkpoint_dir checkpoints/demo_model --batch_size 256 --vehicle_speed 41 --wait_time 0.5 --time_horizon 24 --epochs 9
 #--gpu 0  time horizon 改小一点 评估时间短一些
 ```
 
@@ -50,7 +50,7 @@ python valid.py --model_dir checkpoints/demo_model --dataset_path data/synthetic
 
 python valid.py --model_dir checkpoints/demo_model --dataset_path data/synthetic_data/valid_dataset.pkl  --time_horizon 0.5
 
-python valid.py --model_dir checkpoints/demo_model --dataset_path data/synthetic_data/valid_dataset.pkl  --time_horizon 1 --max_epoch 10
+python valid.py --model_dir checkpoints/demo_model --dataset_path data/synthetic_data/valid_dataset.pkl  --time_horizon 24 --max_epoch 9
 
 
 小量化快速测试
