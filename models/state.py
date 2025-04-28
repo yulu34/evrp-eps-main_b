@@ -23,7 +23,7 @@ from typing import Dict, List    # 类型注解，提供代码提示和检查
 DPI = 70 # 之后改 这个是真正起作用的 清晰度可用就行 # 之后改真正影响图片质量的是state里面的参数 之后改 每英寸的点数 150-》70
 SMALL_VALUE = 1e-9
 BIT_SMALL_VALUE = 1e-3
-SAVE_PICTURE = True # 是否保存每一帧图片 #可以改为True # 之后改 改为true 不想生成视频也可以只把这个关了 会有数据 # 在readme中如果调用valid需要做图 这个必须打开 不打开这个只打开visual没用
+SAVE_PICTURE = False # 是否保存每一帧图片 #可以改为True # 之后改 改为true 不想生成视频也可以只把这个关了 会有数据 # 在readme中如果调用valid需要做图 这个必须打开 不打开这个只打开visual没用
 # 关掉这个因为不关在reproduce时会生成很多 reproduce的可视化是做图 不是做视频
 SAVE_HISTORY = True # 是否保存历史 之后改这个具体保持的是什么
 OUTPUT_INTERVAL = 0.02 # 输出时间间隔，控制动画更新频率 之后改这个可用就行  #时间切片 0.02-》
@@ -1289,6 +1289,20 @@ class CIRPState(object):
         # 2. 计算所有车辆的重复访问总次数 (对每个批次求和)
         total_revisit_counts_all_vehicles = self.vehicle_revisit_counts.sum(dim=1).float() # shape: [batch_size]
 
+        # --- 打印详细信息 ---
+        # 获取当前时间用于上下文
+        current_sim_time = self.current_time[0].item() # 用批次0的时间作为代表
+        # 打印 self.vehicle_revisit_counts 的当前状态 (每个车辆的重复访问次数)
+        revisit_counts_per_vehicle_list = self.vehicle_revisit_counts.cpu().tolist()
+        # 打印 total_revisit_counts_all_vehicles 的当前状态 (每个批次所有车辆重复访问的总和)
+        total_revisit_list = total_revisit_counts_all_vehicles.cpu().tolist()
+
+        # print(f"--- [冲突成本计算 @ T={current_sim_time:.3f}] ---")
+        # print(f"    当前各车辆重复访问客户点计数 (self.vehicle_revisit_counts): {revisit_counts_per_vehicle_list}")
+        # print(f"    当前各批次车辆重复访问客户点总和 (total_revisit_counts_all_vehicles): {total_revisit_list}")
+        # --- 打印结束 ---
+        # =======================
+
         # 3. 计算“调整后”的等待车辆数 = 实际等待数 + 所有车辆重复访问总数
         adjusted_num_waiting_vehicles = num_waiting_vehicles + total_revisit_counts_all_vehicles
         # --- 修改结束 ---
@@ -1361,6 +1375,27 @@ class CIRPState(object):
         # 在 elapsed_time 应用后，更新指标（约在行 1150 附近）
         self.current_time += elapsed_time * update_batch
 
+        # ============================================================== #
+        # == NEW CODE BLOCK: Update knowledge for QUEUED vehicles      == #
+        # ============================================================== #
+        # Identify currently queued vehicles in the batches being updated
+        is_queued = (self.charge_queue.sum(1) > 1) # Shape: [batch_size, num_vehicles]
+        # Consider only vehicles that are queued AND are in batches being updated by this call
+        target_vehicles_mask = is_queued & update_batch.unsqueeze(-1) # Shape: [batch_size, num_vehicles]
+
+        if target_vehicles_mask.any():
+            # Get the batch and vehicle indices for the target vehicles
+            update_batches, update_vehicles = torch.where(target_vehicles_mask)
+            # update_batches and update_vehicles are flat tensors of shape [num_queued_in_active_batches]
+
+            # Get the current global persistent visited state for the relevant batches
+            # Shape: [num_queued_in_active_batches, num_locs]
+            current_global_persistent_state = self.persistent_visited_mask[update_batches, :]
+
+            # Update the knowledge mask for these specific queued vehicles
+            # Assign the global state to the corresponding vehicle's knowledge row
+            self.vehicle_known_visited_locs[update_batches, update_vehicles, :] = current_global_persistent_state
+
 
         # 更新与时间相关的指标
         for b in range(self.batch_size):
@@ -1402,6 +1437,7 @@ class CIRPState(object):
             for v_idx in range(self.num_vehicles):
                 if queued_vehicles[b, v_idx]:
                     self.vehicle_queuing_time[b, v_idx] += elapsed_time[b]
+
 
         #---------------------
         # visualize the state
@@ -2529,7 +2565,9 @@ class CIRPState(object):
         avg_charge_per_event = torch.zeros(self.batch_size, device=self.device)
         mask = self.num_charge_events > 0
         avg_charge_per_event[mask] = self.total_charge_energy[mask] / self.num_charge_events[mask].float()
-        
+
+        total_revisits_for_instance = self.vehicle_revisit_counts.sum().item() # Sum all revisits in this instance
+
         # Collect all metrics
         metrics = {
             # Service metrics
@@ -2555,7 +2593,11 @@ class CIRPState(object):
             # Energy metrics
             "total_travel_energy": self.total_travel_energy.cpu().item(),
             # "total_supply_energy": self.total_supply_energy.cpu().item(),
-            "total_charge_energy": self.total_charge_energy.cpu().item()
+            "total_charge_energy": self.total_charge_energy.cpu().item(),\
+            # --- Add the new revisit metric ---
+            "total_revisits_instance": total_revisits_for_instance
+            # --- End new metric ---
+
         }
         
         return metrics

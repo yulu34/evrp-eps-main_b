@@ -242,8 +242,8 @@ if __name__ == "__main__":
     # 2D or 3D
     parser.add_argument("--num_samples",  type=int, default=1)
     parser.add_argument("--num_depots",   type=int, default=1)
-    parser.add_argument("--num_locs",     type=int, default=20)
-    parser.add_argument("--num_vehicles", type=int, default=3)
+    parser.add_argument("--num_locs",     type=int, default=50)
+    parser.add_argument("--num_vehicles", type=int, default=20)
     parser.add_argument("--vehicle_cap",  type=int, default=10) ## Vehicles are homogeneous (all have same capacity)
 #vehicle_cap = [vehicle_cap for _ in range(num_vehicles)] # [num_vehicle]
 #vehicle_cap是相同的所以车辆容量是同质的 之后改的时候可以考虑异质  10* 0.8 = 8 battery/energy capacity

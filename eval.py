@@ -88,6 +88,10 @@ def write_metrics_to_csv(metrics, output_dir, filename="metrics.csv"):
         'total_travel_energy',
         'total_charge_energy',
         #'total_supply_energy'
+                # --- Add New Metrics Here ---
+        'avg_total_revisits',
+        'std_total_revisits',
+        # --- End New Metrics ---
     ]
     
     # Add any other fields that might be in the metrics dict but not predefined
@@ -210,6 +214,8 @@ def eval(dataset_path: str,
 # 用于统计分析
     conflict_cost_list = []
     calc_time_list = []
+    detailed_metrics_list = [] # 假设这个列表也在这里初始化
+    total_revisits_instance_list = [] # <--- 正确的初始化位置
 #     存储计算时间
 # 记录每个批次处理所需的时间
 # 用于评估模型的计算效率
@@ -292,9 +298,27 @@ def eval(dataset_path: str,
 # 惩罚值为0.2(penalty=0.2)
 # 则断电基站数量为20个(100 * 0.2 = 20)
         actual_tour_length_list.append(cost_dict["tour_length"] * batch["grid_scale"].squeeze(-1))
+
+        # --- Collect the new metric ---
+        if "total_revisits_instance" in cost_dict:
+            total_revisits_instance_list.append(cost_dict["total_revisits_instance"])
+        else:
+            total_revisits_instance_list.append(0) # Append 0 if metric not found (optional fallback)
+        # --- End collect metric ---
+
         # Add this new list to collect detailed metrics
-        detailed_metrics_list = []
+
                 # Check if we have access to detailed metrics and add them if available
+        # --- Collect the new metric (this line should now work) ---
+        if "total_revisits_instance" in cost_dict:
+            total_revisits_instance_list.append(cost_dict["total_revisits_instance"])
+        else:
+            # Optional: Handle cases where the metric might be missing
+            # Depending on the model type or decoding method, it might not always be calculated.
+            # Decide if appending 0 is appropriate or if you should raise an error/warning.
+            print(f"Warning: 'total_revisits_instance' not found in cost_dict for batch {batch_id}.")
+            total_revisits_instance_list.append(0.0) # Append a default value (e.g., 0.0)
+            
         if "detailed_metrics" in cost_dict:
             detailed_metrics_list.append(cost_dict["detailed_metrics"])
 #         batch["grid_scale"]
@@ -398,6 +422,14 @@ def eval(dataset_path: str,
     actual_tour_length = torch.cat(actual_tour_length_list, dim=0)
     avg_actual_tour_length = torch.mean(actual_tour_length).cpu().item()
     std_actual_tour_length = torch.std(actual_tour_length, unbiased=False).cpu().item()
+
+    # --- Aggregate the new metric ---
+    # Convert list to tensor for easier calculation
+    total_revisits_tensor = torch.tensor(total_revisits_instance_list, dtype=torch.float, device=device) # Use float for mean/std
+    avg_total_revisits = total_revisits_tensor.mean().cpu().item()
+    std_total_revisits = total_revisits_tensor.std(unbiased=False).cpu().item()
+    # --- End aggregation ---
+    
     # 实际路线长度的统计
     # 计算平均实际路线长度和标准差
 
@@ -413,7 +445,11 @@ def eval(dataset_path: str,
         "std_conflict_cost": std_conflict_cost,
         "total_calc_time": total_calc_time,
         "avg_actual_tour_length": avg_actual_tour_length,
-        "std_actual_tour_length": std_actual_tour_length
+        "std_actual_tour_length": std_actual_tour_length,
+                # --- Add aggregated revisit metric to summary ---
+        "avg_total_revisits": avg_total_revisits,
+        "std_total_revisits": std_total_revisits,
+        # --- End add metric ---
     }
     
     # Process detailed metrics if available

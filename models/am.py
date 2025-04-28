@@ -135,16 +135,19 @@ class AM4CIRP(nn.Module):
     
     def greedy_decode(self, inputs: dict):
         state, prob_list, tour_list, vehicle_list, skip_list = self._rollout(inputs, "greedy")
-        cost_dict = state.get_rewards()
-        
+        cost_dict = state.get_rewards() # Gets tour_length, conflict_cost
+
+        detailed_metrics = {} # Initialize empty dict
         if hasattr(state, 'get_final_metrics'):
             detailed_metrics = state.get_final_metrics()
-            # Include the detailed metrics in the cost_dict
-            cost_dict["detailed_metrics"] = detailed_metrics
-            
+            # --- Explicitly merge detailed metrics into the main dict ---
+            cost_dict.update(detailed_metrics)
+            # --- End merge ---
+
         vehicle_ids = torch.cat(vehicle_list, -1)
         node_ids = torch.cat(tour_list, -1)
         masks = torch.cat(skip_list, -1)
+        # The returned cost_dict now directly contains 'total_revisits_instance'
         return cost_dict, vehicle_ids, node_ids, masks
     
     def replicate_batch(self,
