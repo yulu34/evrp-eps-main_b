@@ -141,7 +141,7 @@ class CIRPDataset(Dataset):
         vehicle_cap = [vehicle_cap for _ in range(num_vehicles)] # [num_vehicle]
         vehicle_initial_position_id = torch.randint(num_locs, num_nodes, (num_vehicles, )) # [num_vehicles]
         # vehicle_discharge_rate = torch.FloatTensor([vehicle_discharge_rate for _ in range(num_vehicles)]) #删除
-        vehicle_consump_rate = torch.FloatTensor([0.161 * grid_scale for _ in range(num_vehicles)]) 
+        vehicle_consump_rate = torch.FloatTensor([0.251 * grid_scale for _ in range(num_vehicles)]) 
         #-----------
         # locations
         #-----------
@@ -174,7 +174,7 @@ class CIRPDataset(Dataset):
         #torch.FloatTensor(num_locs, coord_dim)：创一个形状为 [num_locs x coord_dim] 的二维张量
         #base（loc->cus）feature dimension是6 e feature dimension d = 6)   横坐标 纵坐标 容量 耗电速率 t时刻的电量 预计down掉的时间
         #电站 有4个特征  之后改  横坐标 纵坐标 放电率 是否被车k访问
-        #车有11个特征 横纵坐标 是否在cust中 当前EV cycle中的阶段 准备持续时间 充电准备时间 整理准备时间 移动准备时间 不可移动的时间（应该是算出来的） 
+        #车有11个特征 横纵坐标 是否在cust中 当前EV cycle中的阶段 准备持续时间 充电准备时间 整理准备时间 移动准备时间 不可移动时间（应该是算出来的） 
         # 电容量 t时刻的剩余电量 
         #         loc_dim=args.loc_dim,         # 基站位置特征维度 (7)
         # depot_dim=args.depot_dim,     # 充电站特征维度 (4)
@@ -320,9 +320,9 @@ if __name__ == "__main__":
     parser.add_argument("--type", type=str, nargs="*", default=["all"])
     parser.add_argument("--num_samples", type=int, nargs="*", default=[12, 1, 1]) #改一下数量
     
-    parser.add_argument("--num_depots", type=int, default=1) 
+    parser.add_argument("--num_depots", type=int, default=20) 
     parser.add_argument("--num_locs", type=int, default=50)
-    parser.add_argument("--num_vehicles", type=int, default=10)
+    parser.add_argument("--num_vehicles", type=int, default=20)
     #问题规模参数
     parser.add_argument("--vehicle_cap", type=float, default=60.0) # all the vehicles have the same capacity
     # parser.add_argument("--vehicle_discharge_rate", type=float, default=10.0) #删除

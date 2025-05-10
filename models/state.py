@@ -23,7 +23,7 @@ from typing import Dict, List    # 类型注解，提供代码提示和检查
 DPI = 70 # 之后改 这个是真正起作用的 清晰度可用就行 # 之后改真正影响图片质量的是state里面的参数 之后改 每英寸的点数 150-》70
 SMALL_VALUE = 1e-9
 BIT_SMALL_VALUE = 1e-3
-SAVE_PICTURE = False # 是否保存每一帧图片 #可以改为True # 之后改 改为true 不想生成视频也可以只把这个关了 会有数据 # 在readme中如果调用valid需要做图 这个必须打开 不打开这个只打开visual没用
+SAVE_PICTURE = True # 是否保存每一帧图片 #可以改为True # 之后改 改为true 不想生成视频也可以只把这个关了 会有数据 # 在readme中如果调用valid需要做图 这个必须打开 不打开这个只打开visual没用
 # 关掉这个因为不关在reproduce时会生成很多 reproduce的可视化是做图 不是做视频
 SAVE_HISTORY = True # 是否保存历史 之后改这个具体保持的是什么
 OUTPUT_INTERVAL = 0.02 # 输出时间间隔，控制动画更新频率 之后改这个可用就行  #时间切片 0.02-》
@@ -31,7 +31,6 @@ FPS = 40 # 之后改 清晰度可用就行 #这里改成了 60 -》40
 UNEQUAL_INTERVAL = False # 是否使用不等时间间隔
 COEF = 1.0  # 一般系数，用于调整某些计算的比例
 V_COEF = 1.0   # 车辆相关的系数，用于调整车辆相关的计算
-
 #--------------------------
 # when input is route_list
 #--------------------------

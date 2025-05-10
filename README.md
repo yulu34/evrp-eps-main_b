@@ -32,12 +32,20 @@ python generate_dataset.py --save_dir data --type eval --num_samples 10
 
 
 python generate_dataset.py --save_dir data/synthetic_data --type all --num_samples 128 1 1
+
+
+python generate_dataset.py --save_dir data/synthetic_data --type all --num_samples 128 1 1  --num_depots 2 --num_locs 50   --num_vehicles 20
+
 ### 2. Training
 We train the RL model on the synthetic datasets. Check the other options with ```python train.py -h```.
 ```
 python train.py --dataset_path data/synthetic_data/train_dataset.pkl --checkpoint_dir checkpoints/demo_model --batch_size 256 --vehicle_speed 41 --wait_time 0.5 --time_horizon 12
 
 python train.py --dataset_path data/synthetic_data/train_dataset.pkl --checkpoint_dir checkpoints/demo_model --batch_size 256 --vehicle_speed 41 --wait_time 0.5 --time_horizon 24 --epochs 99
+
+
+python train.py --dataset_path data/synthetic_data/train_dataset.pkl --checkpoint_dir checkpoints/demo_model --batch_size 256 --vehicle_speed 41 --wait_time 0.5 --time_horizon 13   --num_depots 20 --num_locs 50 --num_vehicles 20 --epochs 99
+
 #--gpu 0  time horizon 改小一点 评估时间短一些
 ```
 
@@ -50,8 +58,7 @@ python valid.py --model_dir checkpoints/demo_model --dataset_path data/synthetic
 
 python valid.py --model_dir checkpoints/demo_model --dataset_path data/synthetic_data/valid_dataset.pkl  --time_horizon 0.5
 
-python valid.py --model_dir checkpoints/demo_model --dataset_path data/synthetic_data/valid_dataset.pkl  --time_horizon 24 --max_epoch 99
-
+python valid.py --model_dir checkpoints/demo_model --dataset_path data/synthetic_data/valid_dataset.pkl  --time_horizon 20 --max_epoch 59
 
 小量化快速测试
 
